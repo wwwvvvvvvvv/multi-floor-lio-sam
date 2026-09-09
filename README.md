@@ -2,11 +2,20 @@
 
 最近更新：**2026-09-09**。
 
-> **当前状态：基础建图与回环功能验收通过，精度初评完成。**
+## 当前开发里程碑
+
+| 阶段 | 状态 | 内容 |
+| --- | --- | --- |
+| v0.1 | ✅ 完成 | 单机器人单楼层 Gazebo 仿真、LiDAR/IMU 适配、LIO-SAM 建图、回环验证与二维精度初评 |
+| v0.2 | ✅ 完成 | LIO-SAM 地图保存、`GlobalMap.pcd` 生成、关机后地图保留、PCD 独立重新加载与 RViz 显示 |
+| v0.3 | 🚧 下一阶段 | 基于已知 `GlobalMap.pcd` 的 NDT/GICP 定位与重定位 |
+
+> **当前状态：单楼层 LIO-SAM 建图、回环验证、地图保存与离线加载功能验收通过，二维精度初评完成。**
 >
 > 已完成自动绕行、回环触发及参与优化的功能验证；二维 ATE RMSE 约 3.98 cm。
-> 当前精度结果使用近似时间戳，尚未完成严格同步的三维评估、重复实验及精度阈值验收。
-> 实测数据见第 15.3～15.4 节，阶段验收结论见第 20 节。
+> 已通过 `/lio_sam/save_map` 保存完整单楼层 PCD 地图，并在关机重启后完成 `GlobalMap.pcd` 的独立重新发布与 RViz 显示验证。
+> 当前精度结果仍使用近似时间戳，尚未完成严格同步的三维评估、重复实验及精度阈值验收；基于已有地图的 NDT/GICP 定位尚待开发。
+> 实测数据见第 15.3～15.5 节，阶段验收结论见第 20 节。
 
 ## 1. 项目目标
 
@@ -14,13 +23,13 @@
 
 当前阶段聚焦最基础、最关键的一步：
 
-> **单机器人、单楼层环境下稳定运行 LIO-SAM，完成三维建图，并验证闭环检测能力。**
+> **单机器人、单楼层环境下稳定运行 LIO-SAM，完成三维建图、回环验证、地图保存与离线加载，并为后续已知地图定位建立基础。**
 
 在此基础上，后续将逐步扩展到：
 
+- 单楼层地图保存与重新加载（已完成基础功能验证）；
+- 基于已有地图进行 NDT/GICP 重定位；
 - 多楼层分别建图；
-- 地图保存与重新加载；
-- 基于已有地图进行重定位；
 - 多机器人共享地图；
 - 单楼层自主导航；
 - 电梯状态机与跨楼层导航；
@@ -712,6 +721,104 @@ cd ~/multi_floor_ws
 python3 scripts/evaluate_trajectory_2d.py results/auto_loop_20260909_160508
 ```
 
+### 15.5 2026-09-09 地图保存与离线加载验证
+
+在完成单楼层建图后，通过 LIO-SAM 自带服务保存当前地图：
+
+```bash
+source /opt/ros/humble/setup.bash
+source ~/lio_sam_ws/install/setup.bash
+
+ros2 service call /lio_sam/save_map lio_sam/srv/SaveMap \
+"{resolution: 0.0, destination: '/lio_sam_maps/floor1'}"
+```
+
+本轮服务返回：
+
+```text
+success=True
+```
+
+保存目录：
+
+```text
+~/lio_sam_maps/floor1
+```
+
+生成文件及规模如下：
+
+| 文件 | 本轮结果 |
+| --- | ---: |
+| `CornerMap.pcd` | 13,723 points |
+| `SurfMap.pcd` | 152,184 points |
+| `GlobalMap.pcd` | 165,907 points |
+| `trajectory.pcd` | 162 points |
+| `transformations.pcd` | 162 points |
+
+其中 `GlobalMap.pcd` 文件大小约 2.6 MB，`trajectory.pcd` 与 `transformations.pcd` 均包含 162 个关键帧记录，说明保存结果来自完整运动建图过程，而不是仅保存单帧初始点云。
+
+为验证地图是否能够脱离建图过程独立复用，关机重启后确认上述 PCD 文件仍然存在，并使用 ROS 2 Humble 中的 `pcl_ros pcd_to_pointcloud` 重新发布：
+
+```bash
+source /opt/ros/humble/setup.bash
+
+ros2 run pcl_ros pcd_to_pointcloud \
+--ros-args \
+-p file_name:=/home/yez/lio_sam_maps/floor1/GlobalMap.pcd \
+-p publish_rate:=10.0
+```
+
+当前环境中输出 Topic 为：
+
+```text
+/cloud_pcd
+```
+
+重新发布后的 `PointCloud2`：
+
+```text
+width = 165907
+fields = x, y, z, intensity
+```
+
+与保存时 `GlobalMap.pcd` 的点数一致，说明 PCD 内容能够被正常读取和重新发布。
+
+需要注意：当前 `pcl_ros` 节点发布的点云 `frame_id` 为 `/base_link`。为了完成 **仅用于离线可视化验证** 的 RViz 显示，本轮临时发布零位姿静态 TF：
+
+```bash
+ros2 run tf2_ros static_transform_publisher \
+0 0 0 0 0 0 map base_link
+```
+
+随后在 RViz 中设置：
+
+```text
+Fixed Frame = map
+PointCloud2 Topic = /cloud_pcd
+```
+
+完整单楼层三维地图能够正常显示。
+
+> **该零位姿静态 TF 仅用于验证保存地图可重新显示，不能作为后续定位系统的正式 `map -> base_link` 变换。** 后续 NDT/GICP 定位模块应根据实时匹配结果估计机器人在已知地图中的位姿，并建立规范的 `map -> odom -> base_link -> lidar_link` TF 链。
+
+因此，本阶段已经验证：
+
+```text
+LIO-SAM 建图
+    ↓
+save_map
+    ↓
+GlobalMap.pcd
+    ↓
+关机 / 重启
+    ↓
+PCD 独立重新发布
+    ↓
+RViz 离线显示
+```
+
+即 **单楼层三维地图的保存与离线重新加载功能已经跑通**。该结果证明地图文件可以作为后续 NDT/GICP 已知地图定位、多楼层地图管理和多机器人共享地图的基础数据，但尚未完成“定位模块实际加载地图并输出机器人位姿”的验证。
+
 ## 16. 当前闭环测试的不足
 
 第一次人工测试没有记录真实起点，只能验证是否生成回环约束。
@@ -736,9 +843,11 @@ python3 scripts/evaluate_trajectory_2d.py results/auto_loop_20260909_160508
 2. 统一 ROS 仿真时间，并同步记录原始时间戳、完整六自由度 GT 和估计轨迹；
 3. 在同一路线重复实验，并增加开启／关闭回环的对照；
 4. 计算严格同步的三维 ATE、固定间隔 RPE，报告重复实验统计和回环带来的变化；
-5. 验证 LIO-SAM 三维地图保存；
-6. 重启系统，验证保存后的 PCD 地图能够加载和显示；
-7. 在已有地图上开发并验证 NDT/GICP 重定位。
+5. **已完成** LIO-SAM 三维地图保存验证；
+6. **已完成** 关机重启后 `GlobalMap.pcd` 的独立重新发布与 RViz 显示验证；
+7. 开发基于已有 `GlobalMap.pcd` 的 NDT/GICP 定位与重定位模块；
+8. 验证不同初始位姿偏差下的重定位成功率、收敛时间和定位误差；
+9. 单楼层定位稳定后，再进入多楼层地图管理、电梯拓扑和多机器人扩展。
 
 ## 18. 后续论文总体路线
 
@@ -799,13 +908,31 @@ Ground Truth 只用于仿真测试控制和算法评价，不能直接提供给 
 
 ### 19.3 地图保存与加载
 
-尚未正式验证 LIO-SAM `save_map` 以及保存后的 PCD 地图重新加载。
+已完成 LIO-SAM `save_map` 与保存地图离线重新加载验证。
 
-这是完成单楼层阶段之前必须做的下一项工作。
+当前正式保存目录：
+
+```text
+~/lio_sam_maps/floor1
+```
+
+其中主要地图文件：
+
+```text
+GlobalMap.pcd          165907 points
+SurfMap.pcd            152184 points
+CornerMap.pcd           13723 points
+trajectory.pcd            162 points
+transformations.pcd       162 points
+```
+
+关机重启后，`GlobalMap.pcd` 已通过 `pcl_ros pcd_to_pointcloud` 独立发布到 `/cloud_pcd` 并在 RViz 中成功显示，证明保存地图文件可被重复读取和使用。
+
+当前“地图加载”仅完成 **离线读取与可视化验证**。下一阶段需要让 NDT/GICP 定位模块实际加载该地图，并根据实时 LiDAR 扫描计算机器人位姿。
 
 ### 19.4 定位模块
 
-目前仍然是在 LIO-SAM Mapping 模式下工作。
+建图阶段仍使用 LIO-SAM Mapping；保存地图的离线重新加载已经验证，但尚未形成独立的实时定位节点。
 
 后续需要开发：
 
@@ -834,16 +961,20 @@ PointCloud Adapter
   ↓
 LIO-SAM
   ↓
-三维地图
+三维地图 + 闭环优化
   ↓
-闭环检测
+save_map
+  ↓
+GlobalMap.pcd
+  ↓
+离线重新加载与 RViz 显示
 ```
 
 整条基础链路。
 
 当前阶段验收结论为：
 
-> **基础建图与回环功能验收通过，精度初评完成。**
+> **单楼层基础建图、回环、地图保存与离线加载功能验收通过，二维精度初评完成。**
 
 | 验收项 | 当前结论 | 依据或限制 |
 | --- | --- | --- |
@@ -852,14 +983,16 @@ LIO-SAM
 | 回环触发与参与优化 | 通过功能验证 | 51 条回环约束、50 次历史位姿更新，无 GPS 输入或轨迹重置记录 |
 | 二维轨迹精度 | 初评完成 | ATE RMSE 3.98 cm；相邻关键帧 RPE 平移 RMSE 2.22 cm、航向 RMSE 0.485° |
 | 论文最终精度验收 | 尚未完成 | 缺少严格同步三维数据、预设阈值、重复实验及回环开关对照 |
-| 地图保存、加载与重定位 | 待验证／开发 | 见第 19.3～19.4 节 |
+| 三维地图保存 | 通过 | `save_map` 成功生成完整 PCD 地图，`GlobalMap.pcd` 为 165,907 points |
+| 地图离线重新加载 | 通过 | 关机重启后 PCD 可独立发布并在 RViz 中显示 |
+| 已有地图定位 / 重定位 | 待开发 | NDT/GICP 尚未实现，见第 19.4 节 |
 
 上述“通过”适用于当前单机器人、单楼层仿真的功能阶段；
 二维精度结果是初步测量，不能直接据此宣称达到论文最终精度要求。
 
 下一阶段不建议立即进入多楼层，而应先完成：
 
-> **严格同步的定量评估与对照实验 → 地图保存 → 地图加载与重定位**
+> **严格同步的定量评估与对照实验 → NDT/GICP 已知地图定位 → 单楼层导航 → 多楼层扩展**
 
 将单楼层基础功能彻底做扎实后，再扩展到多楼层与多机器人。
 
@@ -874,6 +1007,8 @@ LIO-SAM
 实验环境
 测试路线
 测试结果
+地图文件及点数
+Git commit / tag
 发现的问题
 解决方法
 ```
