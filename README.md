@@ -1,6 +1,6 @@
 
 
-最近更新：**2026-09-14**。
+最近更新：**2026-09-15**。
 
 ## 当前开发里程碑
 
@@ -11,32 +11,35 @@
 | v0.3 | ✅ 完成 | 基于已知 `GlobalMap.pcd` 的 NDT 定位、`/initialpose` 初始位姿设置与重定位 |
 | v0.3.5 | ✅ 完成 | 引入 odometry motion prior 与 quality gate，解决转弯场景下 NDT 错误局部收敛和连续发散问题 |
 | v0.3.7 | ✅ 完成 | 建立标准 `map -> odom -> base_link -> lidar_link` TF 架构，并完成静止、直行及原地转弯动态验证 |
-| v0.4 | 🚧 下一阶段 | 三维点云地图二维导航层生成与 Nav2 单机器人自主导航 |
+| v0.4 | ✅ 完成 | 从 `GlobalMap.pcd` 生成二维 OccupancyGrid，完成 Nav2 `map_server`、全局/局部 costmap、BT Navigator、DWB 与速度平滑接入 |
+| v0.4.1 | ✅ 完成 | 修复 `/clock`、NDT quality gate 锁死及 `map -> odom` 旧时间戳问题；TF 高频刷新约 50 Hz；完成单楼层 Nav2 控制链功能验证 |
+| v0.5 | 🚧 下一阶段 | Nav2 参数优化、目标到达误差/重复性测试、严格同步定位评价与多楼层扩展准备 |
 | 后续 | ⏳ 规划中 | 多楼层地图管理、多机器人共享地图、任务分配、路径协调与电梯跨层运输调度 |
 
-> **当前状态：单楼层 LIO-SAM 建图、回环验证、地图保存、已知地图 NDT 定位、重定位、鲁棒定位及标准 TF 架构均已完成阶段性验证。**
+> **当前状态：单楼层 LIO-SAM 建图、地图保存、NDT 已知地图定位、标准 TF、二维导航地图与 Nav2 单机器人导航链路均已完成阶段性功能验证。**
 >
-> 已完成基于 `GlobalMap.pcd` 的 NDT 已知地图定位，并支持 `/initialpose` 重定位。针对转弯场景中 NDT 易发生错误局部收敛的问题，引入 odometry motion prior 与 quality gate；当前定位系统已重构为标准 `map -> odom -> base_link -> lidar_link` TF 架构。静止、直行及原地转弯测试中 NDT 均保持 `ACCEPT`，典型 fitness 约为 0.014。
-> 建图阶段二维 ATE RMSE 初评约 3.98 cm；该结果仍属于近似时间戳的阶段性二维评估。定位阶段已接入 Gazebo world pose 作为独立 Ground Truth，严格同步、重复实验和最终论文级精度验收仍需继续完善。
+> 当前系统使用已保存的 `GlobalMap.pcd` 进行 NDT 已知地图定位，采用 odometry motion prior 与 quality gate 保证连续运动稳定性；NDT 接受结果用于更新 `T_map_odom`，并由 `/odom` 回调以约 50 Hz 刷新 `map -> odom` 的时间戳，避免低频 NDT 计算造成 TF 过期。二维导航层已由三维点云投影生成，Nav2 已接入 global planner、DWB controller、velocity smoother 与 BT Navigator。
+> 建图阶段二维 ATE RMSE 初评约 3.98 cm；Nav2 当前已完成目标点规划与速度控制链验证，但目标到达精度、导航重复性、严格同步三维 ATE/RPE 及最终论文级验收仍需继续完善。
 
 ## 1. 项目目标
 
 本项目面向硕士毕业论文仿真，目标是构建一套基于 **ROS 2 Humble + Gazebo Fortress（Ignition Gazebo）+ LIO-SAM** 的多楼层移动机器人建图、定位与导航实验平台。
 
-当前已经完成第一阶段的单楼层基础链路：
+当前已经完成单楼层从建图、定位到导航控制的基础闭环链路：
 
-> **LIO-SAM 三维建图 -> 地图保存 -> 已知地图 NDT 定位 / 重定位 -> 鲁棒定位 -> 标准 ROS 2 TF 架构。**
+> **LIO-SAM 三维建图 -> 地图保存 -> NDT 已知地图定位 / 重定位 -> 标准 TF -> 二维导航地图 -> Nav2 -> DWB -> `/cmd_vel`。**
 
-当前定位系统采用已保存的 `GlobalMap.pcd` 作为全局点云地图，利用当前 LiDAR 扫描进行 NDT 配准；同时引入 odometry motion prior 与 quality gate，提高连续运动和转弯场景下的稳定性。
+当前定位系统采用已保存的 `GlobalMap.pcd` 作为全局点云地图，利用当前 LiDAR 扫描进行 NDT 配准；同时引入 odometry motion prior 与 quality gate，提高连续运动和转弯场景下的稳定性。导航阶段不再使用 AMCL，而是由 NDT 提供全局定位修正，由 Nav2 完成路径规划与局部控制。
 
-后续将逐步扩展到：
+后续将重点扩展到：
 
-- 三维点云地图到二维导航栅格地图的转换；
-- Nav2 单机器人自主导航；
+- Nav2 参数优化、目标到达误差与重复性评价；
+- 严格同步 Ground Truth、完整三维 ATE/RPE 与消融/基线实验；
 - 多楼层分别建图与楼层地图管理；
+- 电梯拓扑、楼层切换与跨楼层导航状态机；
 - 多机器人共享地图；
 - 多机器人任务分配与路径协调；
-- 电梯状态机、跨楼层运输与调度。
+- 电梯预约、延迟传播与在线局部修复。
 
 ## 2. 当前软件环境
 
@@ -45,6 +48,8 @@
 - Gazebo Fortress / Ignition Gazebo 6.x
 - LIO-SAM ROS 2 版本
 - GTSAM 4.1.1
+- Nav2（ROS 2 Humble）
+- `pointcloud_to_laserscan`
 
 > 注意：本项目使用的是 **Ignition Gazebo / Gazebo Fortress**，不是 Gazebo Classic。
 
@@ -66,7 +71,7 @@ known_map_localization
 
 其中：
 
-- `multi_floor_sim`：Gazebo 场景、机器人模型、传感器、ROS-Gazebo Bridge、启动文件；
+- `multi_floor_sim`：Gazebo 场景、机器人模型、传感器、ROS-Gazebo Bridge、Nav2 参数、二维导航地图接入与一键启动文件；
 - `lio_sam_sim_adapter`：用于将 Gazebo 雷达点云转换为 LIO-SAM 所需要的点云格式；
 - `known_map_localization`：负责已知地图发布、NDT 定位、`/initialpose` 重定位、odom motion prior、quality gate、标准 TF 广播及 Ground Truth 评价。
 
@@ -155,7 +160,7 @@ Gazebo 中 IMU nominal 更新频率设置约为 200 Hz。
 /odom
 ```
 
-其中 `/cmd_vel` 已经可以由 ROS 2 向 Gazebo 机器人发送速度控制命令。
+其中 `/cmd_vel` 已经可以由 ROS 2 向 Gazebo 机器人发送速度控制命令。Nav2 集成运行时还通过 `floor1_nav_all.launch.py` 额外桥接 `/clock`，并统一关键节点使用 `use_sim_time:=true`。
 
 当前启动文件：
 
@@ -293,7 +298,7 @@ map
 
 各级 TF 分工如下：
 
-- `map -> odom`：由 NDT 全局定位结果与 `/odom` 计算得到，负责全局纠偏；
+- `map -> odom`：NDT 在接受匹配结果后更新最新 `T_map_odom` 修正值；在两次 NDT 之间，由 `/odom` 回调以约 50 Hz 使用当前 odometry 时间戳刷新同一修正值，负责全局纠偏并保证 TF 时间新鲜；
 - `odom -> base_link`：由 `odom_tf_broadcaster` 根据 Gazebo `/odom` 以约 50 Hz 发布，提供连续、平滑的局部运动；
 - `base_link -> lidar_link`：静态外参，平移 `[0, 0, 0.14]`，旋转为单位四元数。
 
@@ -315,13 +320,16 @@ T_odom_base
 T_map_odom = T_map_base * inverse(T_odom_base)
 ```
 
-v0.3.7 已通过 `tf2_echo` 与 `view_frames` 验证：
+v0.4.1 已通过 `tf2_echo`、`/tf` 与 `/clock` 联合检测验证：
 
 ```text
-map -> odom          约 2.6 Hz
-odom -> base_link    约 50 Hz
-base_link -> lidar   static
+NDT 全局修正计算          约 1.5 ~ 2.3 Hz（单次计算约 0.44 ~ 0.66 s）
+map -> odom TF 刷新       约 50 Hz
+odom -> base_link         约 50 Hz
+base_link -> lidar_link    static
 ```
+
+在最新稳定测试中，`map -> odom` 实测约 `49.98 Hz`，采样窗口内平均、P95、P99 与最大时间延迟均为 `0.0000 s`，`>0.10 s` 样本为 0。该结果用于验证 TF 时间戳刷新机制，不代表 NDT 本体运行在 50 Hz。
 
 并确认完整链路为：
 
@@ -381,6 +389,21 @@ static TF           -> base_link -> lidar_link
 ```
 
 只有通过 quality gate 的 `NDT ACCEPT` 结果才允许更新 `map -> odom`；`NDT REJECT` 不会污染全局 TF。
+
+### 8.4 v0.4.1：NDT quality gate 与 TF 时间戳修复
+
+Nav2 初次接入时曾出现两类与定位/TF相关的问题：
+
+1. **quality gate 锁死**：当 odometry prior 已可用时，仍使用“当前 NDT 结果相对上一次接受位姿的绝对跳变”作为拒绝条件，机器人正常运动后可能持续触发 `position_jump` / `yaw_jump`。当前逻辑改为：
+   - 有有效 odom prior 时，主要检查 NDT 与 odom prediction 的位置/航向误差；
+   - 无 odom prior 时，才使用相对上一接受位姿的 position/yaw jump 约束。
+
+2. **`map -> odom` TF 过旧**：NDT 单次计算约需 0.44～0.66 s，如果直接使用扫描时间戳发布 TF，Nav2 会出现 `Transform data too old`。当前策略为：
+   - NDT `ACCEPT` 时只更新最新 `T_map_odom` 修正值；
+   - `/odom` 回调以当前 odometry 消息时间戳高频刷新 `map -> odom`；
+   - `/initialpose` 重初始化时清空旧修正，避免重新定位期间广播旧 TF。
+
+该修改使 NDT 可以保持低频全局修正，同时向 Nav2 提供高频且时间新鲜的 TF。
 
 ## 9. IMU 与 LiDAR 时间同步处理
 
@@ -466,6 +489,56 @@ ros2 daemon start
 '/cmd_vel@geometry_msgs/msg/Twist]ignition.msgs.Twist',
 ```
 
+### 10.5 `/clock` 未桥接导致仿真时间停滞
+
+Nav2 接入过程中曾发现 `/clock` 的 `Publisher count: 0`，导致所有 `use_sim_time=true` 节点无法获得持续更新的仿真时间。当前在一键启动文件中增加独立 `/clock` bridge，并要求只保留一个时钟发布者。
+
+正常状态：
+
+```text
+/clock Publisher count: 1
+```
+
+### 10.6 `map -> odom` TF 过旧导致 Nav2 控制失败
+
+早期 Nav2 能生成全局路径，但 controller 输出为零，并报告：
+
+```text
+Transform data too old when converting from odom to map
+Unable to transform robot pose into global plan's frame
+```
+
+通过第 8.4 节所述的高频 TF 刷新机制解决。
+
+### 10.7 重复节点导致 `/scan` 频率异常
+
+手工调试节点与一键 launch 同时运行时，曾出现多个 `lidar_time_converter`、`pointcloud_to_laserscan`、Nav2/RViz 等重复进程，导致 `/scan` 频率超过 100 Hz。
+
+清理全部旧进程后，只保留一套一键启动系统，当前验证：
+
+```text
+/clock Publisher count: 1
+/scan  Publisher count: 1
+/scan  frequency ≈ 10 Hz
+重名节点：无
+```
+
+可使用以下命令快速检查重复节点：
+
+```bash
+ros2 node list | sort | uniq -d
+```
+
+### 10.8 `map_server` 生命周期启动时序
+
+一键启动初版中 `map_server` 与其 lifecycle manager 同时启动，曾出现 `map_server = inactive [2]`。已将 lifecycle manager 延后启动以避免竞争；如现场仍出现 inactive，可通过以下命令临时恢复：
+
+```bash
+ros2 lifecycle set /map_server activate
+```
+
+最终目标是在冷启动复验中确认该手工步骤不再需要。
+
 ## 11. 当前固定启动方式
 
 ### 终端 1：Gazebo + Bridge + 点云适配器
@@ -548,6 +621,74 @@ ros2 topic echo /localization/status --once
 ```
 
 查看 `NDT ACCEPT / REJECT`、fitness、odom prior 使用情况和预测误差。
+
+### 11.5 v0.4：单楼层 Nav2 一键启动
+
+当前新增一键集成启动文件：
+
+```bash
+~/multi_floor_ws/src/multi_floor_sim/launch/floor1_nav_all.launch.py
+```
+
+编译后可执行：
+
+```bash
+source /opt/ros/humble/setup.bash
+source ~/lio_sam_ws/install/setup.bash
+source ~/multi_floor_ws/install/setup.bash
+
+ros2 launch multi_floor_sim floor1_nav_all.launch.py
+```
+
+该 launch 当前负责启动/组织：
+
+```text
+Gazebo + 基础 Bridge
+        ↓
+/clock bridge
+        ↓
+odom -> base_link
+        ↓
+PointCloud2 -> /scan
+        ↓
+NDT known-map localization
+        ↓
+map_server
+        ↓
+/initialpose（当前 Floor1 默认出生点）
+        ↓
+Nav2
+        ↓
+RViz
+```
+
+当前 Floor1 默认机器人出生位姿约为 `(x=0, y=0, yaw=0)`，因此一键启动暂按该位姿发布初始值；未来多楼层阶段应改为基于楼层状态与机器人实际先验进行初始化。
+
+推荐启动后执行以下健康检查：
+
+```bash
+ros2 topic info /clock | grep "Publisher count"
+ros2 topic info /scan | grep "Publisher count"
+timeout 4s ros2 topic hz /scan
+ros2 topic echo /localization/status --once
+ros2 lifecycle get /map_server
+ros2 lifecycle get /controller_server
+ros2 lifecycle get /planner_server
+ros2 lifecycle get /bt_navigator
+ros2 action info /navigate_to_pose
+```
+
+正常情况下应满足：
+
+```text
+/clock Publisher count: 1
+/scan Publisher count: 1
+/scan ≈ 10 Hz
+NDT ACCEPT
+odom_prior_used = true
+map_server / controller_server / planner_server / bt_navigator = active [3]
+/navigate_to_pose Action servers: 1
+```
 
 ## 12. 编译方式
 
@@ -1026,6 +1167,64 @@ odom_prior_used = true
 Ground Truth 由 Gazebo world pose 独立提供；手工 `--once` 采样因时间戳不同仅用于现场检查，正式 RMSE 仍应使用同步 evaluator 结果。
 
 
+### 15.9 v0.4：二维导航地图与 Nav2 单机器人导航接入
+
+已从 `GlobalMap.pcd` 提取二维导航栅格地图。当前地图参数：
+
+```text
+路径：~/nav_maps/floor1/map.yaml
+分辨率：0.05 m
+尺寸：411 × 202
+origin ≈ (-10.195, -4.940)
+```
+
+点云转二维扫描采用 `pointcloud_to_laserscan`：
+
+```text
+输入：/lio_sam/points
+输出：/scan
+target_frame：lidar_link
+高度范围：-0.05 ~ 0.30 m
+range：0.35 ~ 20.0 m
+/scan 实测频率：约 10 Hz
+```
+
+Nav2 使用 `navigation_launch.py`，不启动 AMCL；全局位姿由 NDT 提供。当前主要链路：
+
+```text
+GlobalMap.pcd
+     ↓
+NDT + odom prior + quality gate
+     ↓
+map -> odom -> base_link
+     ↓
+2D OccupancyGrid + /scan
+     ↓
+Nav2 global planner
+     ↓
+DWB controller
+     ↓
+/cmd_vel_nav
+     ↓
+velocity_smoother
+     ↓
+/cmd_vel
+     ↓
+Gazebo robot
+```
+
+当前已验证：
+
+- `/navigate_to_pose` 存在 `/bt_navigator` Action server；
+- `controller_server`、`planner_server`、`bt_navigator` 可进入 `active [3]`；
+- DWB 能生成非零线速度与角速度；
+- 速度经 `velocity_smoother` 后继续发布到 `/cmd_vel`；
+- 目标附近可观察到“停止前进 -> 原地调整最终朝向 -> 角速度逐步减小至 0”的控制行为；
+- 当前局部控制器为 DWB，尚未进行 TEB/MPPI 等控制器对比。
+
+本阶段属于功能链路验收，后续仍需补充目标到达位置/航向误差、路径长度、导航时间、最小障碍距离、轨迹平滑度、控制振荡和 CPU 开销等定量指标。
+
+
 ## 16. 当前闭环测试的不足
 
 第一次人工测试没有记录真实起点，只能验证是否生成回环约束。
@@ -1043,26 +1242,27 @@ Ground Truth 由 Gazebo world pose 独立提供；手工 `--once` 采样因时�
 
 ## 17. 下一步工作
 
-当前单楼层建图、地图保存、已知地图定位、鲁棒定位与标准 TF 已经完成阶段性验证。
+当前单楼层建图、地图保存、NDT 已知地图定位、标准 TF、二维导航地图以及 Nav2 单机器人导航链路已经完成阶段性功能验证。
 
 下一阶段按以下顺序推进：
 
-1. 将 `GlobalMap.pcd` 处理为适合 Nav2 使用的二维 OccupancyGrid；
-2. 配置 Nav2 `map_server`、global costmap、local costmap；
-3. 接入 global planner、controller server 与 BT Navigator；
-4. 保留当前 NDT 定位模块，不使用 AMCL，由 NDT 提供 `map -> odom`；
-5. 完成单机器人单楼层自主导航与目标点到达测试；
-6. 继续完善严格同步的 Ground Truth、三维 ATE/RPE、重复实验和统计；
-7. 单楼层导航稳定后，再扩展多楼层地图管理、电梯拓扑、多机器人共享地图与任务调度。
+1. 完成一键启动的冷启动重复复验，重点确认 `map_server` 生命周期自动激活无需手工干预；
+2. 调整 DWB 与 costmap 参数，改善转弯平滑性、贴墙距离、局部振荡和速度表现；
+3. 建立单机器人导航定量评价：目标到达位置/航向误差、路径长度、运行时间、最小障碍距离、轨迹平滑度与 CPU 开销；
+4. 继续完善严格同步的 Ground Truth、完整三维 ATE/RPE、重复实验和统计；
+5. 设计定位模块 baseline / prior-only / gate-only / full method 消融；
+6. 将单楼层稳定方案扩展为多楼层地图管理与楼层级导航状态机；
+7. 接入电梯拓扑与 FSM，实现机器人进梯、楼层切换和出梯后的地图/定位切换；
+8. 在多楼层单机器人稳定后，再扩展多机器人任务分配、路径协调与电梯调度。
 
 其中论文级定量评估仍需继续补充：
 
-- 全系统统一 ROS 仿真时间；
-- 原始时间戳同步；
+- 全系统统一 ROS 仿真时间与原始时间戳同步；
 - 完整六自由度 Ground Truth；
-- 重复实验；
+- 多次重复实验；
 - 基线 / 消融对照；
-- 预先设定的评价指标与验收阈值。
+- 预先设定的评价指标与验收阈值；
+- Nav2 控制器与导航性能对比实验。
 
 ## 18. 后续论文总体路线
 
@@ -1102,13 +1302,17 @@ LIO-SAM
 
 ### 19.1 `/clock`
 
-自动测试期间已经使用 Ignition/Gazebo 时钟进行记录，但当前系统尚未完全统一为：
+Nav2 集成阶段已经补充 Ignition/Gazebo `/clock` bridge，并在当前一键启动链路中统一主要定位/导航节点使用 `use_sim_time = true`。
+
+当前运行时检查要求：
 
 ```text
-use_sim_time = true
+/clock Publisher count: 1
 ```
 
-后续论文级同步评价前，需要统一 ROS 仿真时间并确保所有关键节点使用同一时间基准。
+重复启动额外 clock bridge 会造成两个时钟发布者，因此使用 `floor1_nav_all.launch.py` 时不应再手动启动第二个 `/clock` bridge。
+
+论文级同步评价仍需进一步保证 Ground Truth、NDT、轨迹记录和评价脚本均直接使用同一原始仿真时间戳，而不是“最近一次收到的时钟值”。
 
 ### 19.2 Ground Truth
 
@@ -1154,9 +1358,16 @@ trajectory.pcd            162 points
 transformations.pcd       162 points
 ```
 
-`GlobalMap.pcd` 已从“仅用于 RViz 离线显示”进一步用于实时 NDT 已知地图定位。
+`GlobalMap.pcd` 已从“仅用于 RViz 离线显示”进一步用于实时 NDT 已知地图定位，并已经生成用于 Nav2 的二维占据栅格地图：
 
-下一阶段需要从三维点云中提取适合二维导航的占据栅格地图，用于 Nav2。
+```text
+~/nav_maps/floor1/map.yaml
+~/nav_maps/floor1/map.pgm
+resolution = 0.05 m
+size = 411 × 202
+```
+
+当前二维地图由三维点云高度切片/投影得到，已经能够支撑第一轮 Nav2 功能验证；后续仍可针对墙体厚度、离散噪点和障碍物膨胀效果进一步清理和优化。
 
 ### 19.4 定位模块
 
@@ -1197,9 +1408,41 @@ map
 - baseline / prior-only / gate-only / full method 消融对照；
 - 严格同步 Ground Truth 下的最终定位精度统计。
 
+### 19.5 Nav2 单机器人导航
+
+当前 Nav2 已形成独立的单楼层导航链路，不使用 AMCL。主要配置文件：
+
+```text
+~/multi_floor_ws/src/multi_floor_sim/config/nav2_params.yaml
+```
+
+当前局部控制器为 DWB，主要数据流为：
+
+```text
+NDT localization + TF
+        +
+2D map + /scan
+        ↓
+Nav2 planner / controller / BT navigator
+        ↓
+/cmd_vel_nav
+        ↓
+velocity_smoother
+        ↓
+/cmd_vel
+```
+
+当前仍需进一步开展：
+
+- DWB 参数系统化调优；
+- 目标到达误差和重复性测试；
+- 不同目标点、障碍场景与路线的稳定性测试；
+- DWB 与 TEB/MPPI 等方案的必要性和对比设计；
+- 导航评价指标与论文实验方案固化。
+
 ## 20. 当前阶段结论
 
-截至 v0.3.7，本项目已经完成：
+截至 v0.4.1，本项目已经完成：
 
 ```text
 Gazebo
@@ -1227,13 +1470,21 @@ odometry motion prior
 quality gate
   ↓
 map -> odom -> base_link -> lidar_link
+  ↓
+二维 OccupancyGrid + /scan
+  ↓
+Nav2 global planner
+  ↓
+DWB + velocity_smoother
+  ↓
+/cmd_vel
 ```
 
-整条单机器人、单楼层建图与定位基础链路。
+整条单机器人、单楼层“建图 -> 已知地图定位 -> 导航控制”基础链路。
 
 当前阶段验收结论为：
 
-> **单楼层 LIO-SAM 建图、回环、地图保存、已知地图 NDT 定位、重定位、鲁棒定位与标准 TF 架构均已完成阶段性功能验证。**
+> **单楼层 LIO-SAM 建图、回环、地图保存、NDT 已知地图定位、标准 TF、二维导航地图与 Nav2 单机器人导航控制链均已完成阶段性功能验证。**
 
 | 验收项 | 当前结论 | 依据或限制 |
 | --- | --- | --- |
@@ -1249,14 +1500,17 @@ map -> odom -> base_link -> lidar_link
 | 标准 TF | 通过 | `map -> odom -> base_link -> lidar_link` 已由 `view_frames` 验证 |
 | 直线动态定位 | 通过 | NDT ACCEPT，fitness 约 0.0144，prediction error 毫米级 |
 | 原地转弯动态定位 | 通过 | NDT ACCEPT，fitness 约 0.0141，旧版转弯发散未复现 |
+| `map -> odom` TF 时间新鲜度 | 通过 | 实测约 49.98 Hz；最终稳定测试中 P99/max age 为 0，未出现 >0.10 s 样本 |
+| 二维导航地图 | 通过功能验证 | 0.05 m，411 × 202，可由 `map_server` 发布 |
+| `/scan` 转换 | 通过 | 单发布者，约 10 Hz |
 | 论文最终精度验收 | 尚未完成 | 仍需严格同步三维数据、重复实验、消融/基线对照及预设阈值 |
-| Nav2 单机器人自主导航 | 下一阶段 | 尚未开始正式接入 |
+| Nav2 单机器人自主导航 | 通过阶段性功能验证 | `/navigate_to_pose`、DWB、`/cmd_vel_nav`、velocity smoother 与 `/cmd_vel` 控制链已接通；最终到达精度与重复性仍待定量评价 |
 
 下一阶段重点：
 
-> **三维点云地图二维化 -> Nav2 单机器人自主导航 -> 多楼层地图管理 -> 多机器人与电梯调度扩展**
+> **Nav2 参数与定量评价完善 -> 多楼层地图管理与楼层切换 -> 电梯 FSM -> 多机器人任务分配、路径协调与电梯调度扩展**
 
-在进入多楼层与多机器人之前，先完成单楼层自主导航闭环和论文级定位定量评估。
+在进入多机器人之前，优先把当前单楼层方案做成可重复、可量化、可一键启动的稳定基线，并完成论文级定位/导航定量评估。
 
 ## 21. 维护建议
 
