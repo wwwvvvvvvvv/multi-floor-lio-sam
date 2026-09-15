@@ -450,6 +450,11 @@ private:
         have_last_valid_pose_ = true;
         have_last_accept_odom_ = false;
 
+        {
+            std::lock_guard<std::mutex> lock(map_odom_tf_mutex_);
+            have_map_odom_tf_ = false;
+        }
+
         initial_pose_received_ = true;
 
         const float yaw =
@@ -503,37 +508,19 @@ private:
         return pose_msg;
     }
 
-    void publishMapOdomTf(
-        const Eigen::Matrix4f & T_map_base,
-        const Eigen::Matrix4f & T_odom_base,
+    void sendMapOdomTf(
+        const Eigen::Matrix4f & T_map_odom,
         const builtin_interfaces::msg::Time & stamp)
     {
-        // ------------------------------------------------------------
-        // Standard localization TF:
-        //
-        // T_map_base = T_map_odom * T_odom_base
-        //
-        // Therefore:
-        //
-        // T_map_odom = T_map_base * inverse(T_odom_base)
-        // ------------------------------------------------------------
-        const Eigen::Matrix4f T_map_odom =
-            T_map_base * T_odom_base.inverse();
-
         geometry_msgs::msg::TransformStamped tf_msg;
 
         tf_msg.header.stamp = stamp;
         tf_msg.header.frame_id = "map";
         tf_msg.child_frame_id = "odom";
 
-        tf_msg.transform.translation.x =
-            T_map_odom(0, 3);
-
-        tf_msg.transform.translation.y =
-            T_map_odom(1, 3);
-
-        tf_msg.transform.translation.z =
-            T_map_odom(2, 3);
+        tf_msg.transform.translation.x = T_map_odom(0, 3);
+        tf_msg.transform.translation.y = T_map_odom(1, 3);
+        tf_msg.transform.translation.z = T_map_odom(2, 3);
 
         Eigen::Matrix3f rotation =
             T_map_odom.block<3, 3>(0, 0);
@@ -547,6 +534,56 @@ private:
         tf_msg.transform.rotation.w = q.w();
 
         tf_broadcaster_->sendTransform(tf_msg);
+    }
+
+    void publishMapOdomTf(
+        const Eigen::Matrix4f & T_map_base,
+        const Eigen::Matrix4f & T_odom_base,
+        const builtin_interfaces::msg::Time & stamp)
+    {
+        // ------------------------------------------------------------
+        // Standard localization TF:
+        //
+        // T_map_base = T_map_odom * T_odom_base
+        //
+        // Therefore:
+        //
+        // T_map_odom = T_map_base * inverse(T_odom_base)
+        //
+        // NDT updates this correction at a relatively low rate.
+        // Between NDT updates, /odom refreshes the same correction
+        // with a fresh odometry timestamp for Nav2 / TF consumers.
+        // ------------------------------------------------------------
+        const Eigen::Matrix4f T_map_odom =
+            T_map_base * T_odom_base.inverse();
+
+        {
+            std::lock_guard<std::mutex> lock(map_odom_tf_mutex_);
+            latest_T_map_odom_ = T_map_odom;
+            have_map_odom_tf_ = true;
+        }
+
+        // Do not publish here with the old LiDAR scan timestamp.
+        // The high-rate /odom callback will publish the newly updated
+        // map -> odom correction using a fresh odometry timestamp.
+    }
+
+    void publishLatestMapOdomTf(
+        const builtin_interfaces::msg::Time & stamp)
+    {
+        Eigen::Matrix4f T_map_odom;
+
+        {
+            std::lock_guard<std::mutex> lock(map_odom_tf_mutex_);
+
+            if (!have_map_odom_tf_) {
+                return;
+            }
+
+            T_map_odom = latest_T_map_odom_;
+        }
+
+        sendMapOdomTf(T_map_odom, stamp);
     }
 
     struct OdomSample
@@ -600,14 +637,35 @@ private:
         sample.T_odom_base(0, 3) = static_cast<float>(p.position.x);
         sample.T_odom_base(1, 3) = static_cast<float>(p.position.y);
         sample.T_odom_base(2, 3) = static_cast<float>(p.position.z);
-        std::lock_guard<std::mutex> lock(odom_mutex_);
-        if (!odom_buffer_.empty() && sample.stamp_ns < odom_buffer_.back().stamp_ns) {
-            RCLCPP_WARN(get_logger(), "/odom time moved backwards; clearing motion-prior buffer");
-            odom_buffer_.clear();
-            have_last_accept_odom_ = false;
+        {
+            std::lock_guard<std::mutex> lock(odom_mutex_);
+
+            if (!odom_buffer_.empty() &&
+                sample.stamp_ns < odom_buffer_.back().stamp_ns)
+            {
+                RCLCPP_WARN(
+                    get_logger(),
+                    "/odom time moved backwards; clearing motion-prior buffer");
+
+                odom_buffer_.clear();
+                have_last_accept_odom_ = false;
+            }
+
+            odom_buffer_.push_back(sample);
+
+            while (odom_buffer_.size() > 1000) {
+                odom_buffer_.pop_front();
+            }
         }
-        odom_buffer_.push_back(sample);
-        while (odom_buffer_.size() > 1000) odom_buffer_.pop_front();
+
+        // Keep map -> odom temporally fresh between relatively slow
+        // NDT corrections. The transform value stays equal to the
+        // latest accepted NDT correction, while its timestamp follows
+        // the current odometry sample.
+        // Refresh map -> odom using the timestamp carried by the
+        // current odometry sample. /odom remains temporally fresh even
+        // while the expensive NDT scan callback is running.
+        publishLatestMapOdomTf(msg->header.stamp);
     }
 
     bool findOdom(
@@ -838,11 +896,23 @@ private:
         if (!converged) rejection_reasons.emplace_back("not_converged");
         if (!std::isfinite(fitness)) rejection_reasons.emplace_back("fitness_nonfinite");
         else if (fitness >= fitness_accept_threshold_) rejection_reasons.emplace_back("fitness");
-        if (position_jump >= max_position_jump_) rejection_reasons.emplace_back("position_jump");
-        if (yaw_jump >= max_yaw_jump_) rejection_reasons.emplace_back("yaw_jump");
-        if (odom_prior_used && prediction_position_error >= max_prediction_position_error_)
+        // If a synchronized odom prior is available, validate the NDT
+        // solution against the odom-predicted pose. Comparing it again
+        // against the last accepted pose can create a reject latch when
+        // the robot has moved since the last accepted NDT update.
+        if (!odom_prior_used) {
+            if (position_jump >= max_position_jump_)
+                rejection_reasons.emplace_back("position_jump");
+            if (yaw_jump >= max_yaw_jump_)
+                rejection_reasons.emplace_back("yaw_jump");
+        }
+
+        if (odom_prior_used &&
+            prediction_position_error >= max_prediction_position_error_)
             rejection_reasons.emplace_back("prediction_position_error");
-        if (odom_prior_used && prediction_yaw_error >= max_prediction_yaw_error_)
+
+        if (odom_prior_used &&
+            prediction_yaw_error >= max_prediction_yaw_error_)
             rejection_reasons.emplace_back("prediction_yaw_error");
 
         std::ostringstream reason_stream;
@@ -987,6 +1057,10 @@ private:
     std::deque<OdomSample> odom_buffer_;
     std::mutex odom_mutex_;
     OdomSample last_accept_odom_;
+
+    Eigen::Matrix4f latest_T_map_odom_{Eigen::Matrix4f::Identity()};
+    std::mutex map_odom_tf_mutex_;
+    bool have_map_odom_tf_{false};
 
     bool wait_for_initialpose_{false};
     bool initial_pose_received_{true};
