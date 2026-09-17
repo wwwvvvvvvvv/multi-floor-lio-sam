@@ -4,10 +4,13 @@ from ament_index_python.packages import get_package_share_directory
 
 from launch import LaunchDescription
 from launch.actions import (
+    DeclareLaunchArgument,
     IncludeLaunchDescription,
     TimerAction,
     ExecuteProcess,
 )
+from launch.conditions import IfCondition
+from launch.substitutions import LaunchConfiguration
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import Node
 
@@ -29,10 +32,11 @@ def generate_launch_description():
         'navigation_launch.py'
     )
 
-    nav2_params = (
+    default_nav2_params = (
         '/home/yez/multi_floor_ws/src/'
         'multi_floor_sim/config/nav2_params.yaml'
     )
+    nav2_params = LaunchConfiguration('params_file')
 
     map_yaml = '/home/yez/nav_maps/floor1/map.yaml'
     pcd_map = '/home/yez/lio_sam_maps/floor1/GlobalMap.pcd'
@@ -205,6 +209,34 @@ def generate_launch_description():
         ]
     )
 
+
+    # ============================================================
+    # 7. Floor Map Manager
+    #
+    # Handles runtime switching of:
+    #   Nav2 2D map
+    #   NDT 3D PCD map
+    #   floor-specific /initialpose
+    #   NDT READY confirmation
+    # ============================================================
+    floor_map_manager = TimerAction(
+        period=5.0,
+        actions=[
+            Node(
+                package='multi_floor_sim',
+                executable='floor_map_manager.py',
+                name='floor_map_manager',
+                parameters=[{
+                    'use_sim_time': True,
+                    'required_ndt_accepts': 2,
+                    'operation_timeout_sec': 10.0,
+                    'ndt_ready_timeout_sec': 30.0,
+                }],
+                output='screen',
+            )
+        ]
+    )
+
     # ============================================================
     # 7. Floor1 simulation initial pose
     #
@@ -222,6 +254,8 @@ def generate_launch_description():
                     'topic',
                     'pub',
                     '--once',
+                    '-w',
+                    '1',
                     '/initialpose',
                     'geometry_msgs/msg/PoseWithCovarianceStamped',
                     (
@@ -267,6 +301,7 @@ def generate_launch_description():
         actions=[
             Node(
                 package='rviz2',
+                condition=IfCondition(LaunchConfiguration('use_rviz')),
                 executable='rviz2',
                 name='nav2_rviz',
                 arguments=[
@@ -286,12 +321,15 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        DeclareLaunchArgument('params_file', default_value=default_nav2_params),
+        DeclareLaunchArgument('use_rviz', default_value='true'),
         simulation,
         clock_bridge,
         odom_tf,
         laser_scan,
         ndt_localizer,
         map_server,
+        floor_map_manager,
         map_lifecycle_manager,
         initial_pose,
         navigation,

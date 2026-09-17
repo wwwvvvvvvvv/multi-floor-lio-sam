@@ -12,6 +12,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.parameter import Parameter
 from rcl_interfaces.srv import SetParameters
+from ament_index_python.packages import get_package_share_directory
 
 from geometry_msgs.msg import PoseWithCovarianceStamped
 from diagnostic_msgs.msg import DiagnosticArray
@@ -33,8 +34,13 @@ class FloorMapManager(Node):
     def __init__(self):
         super().__init__('floor_map_manager')
 
-        package_dir = Path(__file__).resolve().parent.parent
-        self.config_file = package_dir / 'config' / 'floor_maps.yaml'
+        package_share = Path(
+            get_package_share_directory('multi_floor_sim')
+        )
+
+        self.config_file = (
+            package_share / 'config' / 'floor_maps.yaml'
+        )
 
         self.floors = {}
 
