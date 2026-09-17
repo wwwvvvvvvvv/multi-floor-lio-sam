@@ -1,4 +1,4 @@
-最近更新：**2026-09-15**。
+最近更新：**2026-09-17**。
 
 ## 当前开发里程碑
 
@@ -25,9 +25,10 @@
   v0.4.1                  ✅ 完成                 修复 `/clock`、NDT quality gate 锁死及 `map -> odom` 旧时间戳问题；TF
                                                   高频刷新约 50 Hz；完成单楼层 Nav2 控制链功能验证
 
-  v0.5                    ✅ 完成                 Nav2终端姿态优化、DWB参数调整、目标到达误差重复实验与单机器人导航定量评价
+  v0.5                    ✅ 完成                 Nav2 终端姿态优化、固定起终点五次重复实验与单机器人导航初步定量评价
 
-  v0.6                    🚧 下一阶段             多楼层地图管理、楼层切换、电梯拓扑与跨楼层导航状态机
+  v0.6                    ✅ 完成                 多楼层地图管理、动态换图、自动重定位及一键 launch 集成已完成并验收通过；
+                                                  真实 Floor2、电梯 FSM 与完整跨楼层自主导航尚未完成
 
   后续                    ⏳ 规划中               多机器人共享地图、任务分配、路径协调、电梯预约与延迟传播调度
   ---------------------------------------------------------------------------------------------------------------------------
@@ -41,9 +42,13 @@
 > `map -> odom` 的时间戳，避免低频 NDT 计算造成 TF
 > 过期。二维导航层已由三维点云投影生成，Nav2 已接入 global planner、DWB
 > controller、velocity smoother 与 BT Navigator。 建图阶段二维 ATE RMSE
-> 初评约 3.98 cm；Nav2
-> 当前已完成目标点规划与速度控制链验证，但目标到达精度、导航重复性、严格同步三维
-> ATE/RPE 及最终论文级验收仍需继续完善。
+> 初评约 3.98 cm；Nav2 已完成一个固定起点/固定目标的五次终端精度重复实验，
+> 当前配置下定位 TF yaw 误差约 2.8°、Gazebo 真值 yaw 误差约 2.7°。
+> v0.6 的多楼层地图管理、动态换图、自动重定位及一键 launch 集成已完成并验收通过：
+> `floor1_nav_all.launch.py` 会自动启动 Floor Map Manager，`/current_floor` 可依次驱动
+> Nav2 二维地图、NDT 三维地图和对应楼层 `/initialpose` 切换，并在连续 2 次
+> `NDT ACCEPT` 后进入 `FLOOR READY`。真实 Floor2、电梯 FSM、进出梯控制和完整跨楼层
+> 自主导航尚未完成。多目标、多路线、障碍场景、严格同步三维 ATE/RPE 及最终论文级验收仍需继续完善。
 
 ## 1. 项目目标
 
@@ -63,9 +68,9 @@ NDT 提供全局定位修正，由 Nav2 完成路径规划与局部控制。
 
 后续将重点扩展到：
 
--   Nav2 参数优化、目标到达误差与重复性评价；
+-   Nav2 多目标、多路线与障碍场景的系统化参数评价；
 -   严格同步 Ground Truth、完整三维 ATE/RPE 与消融/基线实验；
--   多楼层分别建图与楼层地图管理；
+-   制作并验证真实、独立的 Floor2 三维与二维地图；
 -   电梯拓扑、楼层切换与跨楼层导航状态机；
 -   多机器人共享地图；
 -   多机器人任务分配与路径协调；
@@ -110,19 +115,23 @@ known_map_localization
     重定位、odom motion prior、quality gate、标准 TF 广播及 Ground Truth
     评价。
 
-### 3.2 LIO-SAM 工作空间
+### 3.2 LIO-SAM 源码现状
+
+历史建图实验使用的是官方 LIO-SAM ROS 2 分支的修改版。当前主目录中已经没有
+可直接编译的 `~/lio_sam_ws`，因此本文中涉及 `lio_sam` 建图、回环和
+`save_map` 的命令属于历史实验复现说明，在恢复完整 LIO-SAM 工作空间前不能直接执行。
+
+目前保留的修改文件快照位于：
 
 ``` bash
-~/lio_sam_ws
+~/multi-floor-lio-sam/lio_sam_modified
 ```
 
-LIO-SAM 源码目录：
-
-``` bash
-~/lio_sam_ws/src/LIO-SAM
-```
-
-使用官方 LIO-SAM ROS 2 分支进行修改和编译。
+其中保存了 `params.yaml`、`run.launch.py`、`imageProjection.cpp` 和
+`mapOptmization.cpp` 的项目修改版本，但该目录不是完整的 LIO-SAM 包，不能单独
+`colcon build`。当前已知地图 NDT + Nav2 运行链路不依赖重新启动 LIO-SAM Mapping，
+使用保存好的 `GlobalMap.pcd` 和 `lio_sam_sim_adapter` 输出的
+`/lio_sam/points` 即可运行。
 
 ## 4. 已完成的主要工作
 
@@ -292,7 +301,7 @@ scan_period = 0.1 s
 当前配置文件：
 
 ``` bash
-~/lio_sam_ws/src/LIO-SAM/config/params.yaml
+~/multi-floor-lio-sam/lio_sam_modified/config/params.yaml
 ```
 
 核心参数：
@@ -392,7 +401,7 @@ map
 在：
 
 ``` bash
-~/lio_sam_ws/src/LIO-SAM/launch/run.launch.py
+~/multi-floor-lio-sam/lio_sam_modified/launch/run.launch.py
 ```
 
 中删除/注释了 LIO-SAM 自带的 `robot_state_publisher`，避免与仿真机器人
@@ -403,7 +412,7 @@ TF 冲突。
 在：
 
 ``` bash
-~/lio_sam_ws/src/LIO-SAM/src/mapOptmization.cpp
+~/multi-floor-lio-sam/lio_sam_modified/src/mapOptmization.cpp
 ```
 
 中将：
@@ -473,7 +482,7 @@ Waiting for IMU data...
 因此修改：
 
 ``` bash
-~/lio_sam_ws/src/LIO-SAM/src/imageProjection.cpp
+~/multi-floor-lio-sam/lio_sam_modified/src/imageProjection.cpp
 ```
 
 将点云缓存条件：
@@ -602,9 +611,15 @@ ros2 lifecycle set /map_server activate
 
 最终目标是在冷启动复验中确认该手工步骤不再需要。
 
-## 11. 当前固定启动方式
+## 11. 当前启动方式
 
-### 终端 1：Gazebo + Bridge + 点云适配器
+### 11.1 建图与回环（历史流程，需先恢复完整 LIO-SAM 工作空间）
+
+以下三终端流程对应 v0.1～v0.2 的建图与回环实验。当前机器缺少
+`~/lio_sam_ws`，在重新检出并编译完整 LIO-SAM ROS 2 包之前，终端 2 的命令不可执行；
+已保存的历史结果和地图文件不受影响。
+
+**终端 1：Gazebo + Bridge + 点云适配器**
 
 ``` bash
 source /opt/ros/humble/setup.bash
@@ -612,7 +627,7 @@ source ~/multi_floor_ws/install/setup.bash
 ros2 launch multi_floor_sim floor1_system.launch.py
 ```
 
-### 终端 2：LIO-SAM + RViz
+**终端 2：LIO-SAM + RViz**
 
 ``` bash
 source /opt/ros/humble/setup.bash
@@ -620,7 +635,7 @@ source ~/lio_sam_ws/install/setup.bash
 ros2 launch lio_sam run.launch.py
 ```
 
-### 终端 3：自动绕行测试或键盘控制（二选一）
+**终端 3：自动绕行测试或键盘控制（二选一）**
 
 验证回环时，推荐使用已实测的自动绕行脚本。待终端 1、2 启动完成，
 机器人位于初始世界原点附近且键盘控制已关闭后运行：
@@ -649,7 +664,7 @@ l    右转
 k    停止
 ```
 
-### 11.4 已知地图定位启动方式
+### 11.2 已知地图定位启动方式
 
 在不重新运行 LIO-SAM Mapping 的情况下，已知地图定位使用：
 
@@ -686,7 +701,7 @@ ros2 topic echo /localization/status --once
 
 查看 `NDT ACCEPT / REJECT`、fitness、odom prior 使用情况和预测误差。
 
-### 11.5 v0.4：单楼层 Nav2 一键启动
+### 11.3 v0.4：单楼层 Nav2 一键启动
 
 当前新增一键集成启动文件：
 
@@ -698,7 +713,6 @@ ros2 topic echo /localization/status --once
 
 ``` bash
 source /opt/ros/humble/setup.bash
-source ~/lio_sam_ws/install/setup.bash
 source ~/multi_floor_ws/install/setup.bash
 
 ros2 launch multi_floor_sim floor1_nav_all.launch.py
@@ -765,7 +779,7 @@ source /opt/ros/humble/setup.bash
 colcon build --symlink-install
 ```
 
-LIO-SAM 修改后：
+恢复完整 `~/lio_sam_ws` 后，LIO-SAM 修改可按以下方式编译：
 
 ``` bash
 cd ~/lio_sam_ws
@@ -1041,6 +1055,9 @@ python3 scripts/evaluate_trajectory_2d.py results/auto_loop_20260909_160508
 
 在完成单楼层建图后，通过 LIO-SAM 自带服务保存当前地图：
 
+> 以下为 2026-09-09 实验时使用的历史命令。当前需先恢复并编译完整
+> `~/lio_sam_ws`，才能再次调用该服务。
+
 ``` bash
 source /opt/ros/humble/setup.bash
 source ~/lio_sam_ws/install/setup.bash
@@ -1147,7 +1164,9 @@ RViz 离线显示
 即
 **单楼层三维地图的保存与离线重新加载功能已经跑通**。该结果证明地图文件可以作为后续
 NDT/GICP
-已知地图定位、多楼层地图管理和多机器人共享地图的基础数据，但尚未完成"定位模块实际加载地图并输出机器人位姿"的验证。
+已知地图定位、多楼层地图管理和多机器人共享地图的基础数据。在 2026-09-09
+完成 v0.2 验证时，尚未完成“定位模块实际加载地图并输出机器人位姿”；该项后来已在
+第 15.6～15.8 节的 v0.3～v0.3.7 工作中完成。
 
 ### 15.6 已知地图 NDT 定位与 `/initialpose` 重定位
 
@@ -1323,10 +1342,11 @@ Gazebo robot
     0"的控制行为；
 -   当前局部控制器为 DWB，尚未进行 TEB/MPPI 等控制器对比。
 
-本阶段属于功能链路验收，后续仍需补充目标到达位置/航向误差、路径长度、导航时间、最小障碍距离、轨迹平滑度、控制振荡和
-CPU 开销等定量指标。
+v0.4 阶段只完成了功能链路验收。v0.5 已补充一个固定起点/固定目标下的
+位置误差、航向误差、路径长度和导航时间重复实验；最小障碍距离、轨迹平滑度、
+控制振荡、CPU 开销以及多目标/多路线评价仍待补充。
 
-## 15.10 Nav2终端姿态优化与重复性导航实验
+### 15.10 Nav2终端姿态优化与重复性导航实验
 
 在完成 Nav2
 单机器人导航功能验证后，进一步针对目标点附近机器人停止精度不足的问题进行了参数优化。
@@ -1335,17 +1355,31 @@ CPU 开销等定量指标。
 14°，无法满足后续精确停靠和多楼层电梯场景需求。因此对 Nav2
 控制参数进行了优化。
 
-### 15.10.1 DWB控制器参数优化
+#### 15.10.1 参数对照过程与当前配置
 
-调整 DWB RotateToGoal 行为权重：
+初始基线为：
 
 ``` yaml
-RotateToGoal.scale: 50.0
+RotateToGoal.scale: 32.0
+yaw_goal_tolerance: 0.25
 ```
 
-提高机器人到达目标附近后的旋转控制优先级，使机器人能够主动调整最终朝向。
+首先只把 `RotateToGoal.scale` 从 32 提高到 50，并完成五次固定路线测试。
+该组定位 TF yaw 误差平均约 14.1°，Gazebo 真值 yaw 误差平均约 13.5°，
+没有解决最终航向误差问题。该参数随后恢复为 32。
 
-### 15.10.2 Goal Checker参数优化
+当前正式使用的组合是：
+
+``` yaml
+RotateToGoal.scale: 32.0
+yaw_goal_tolerance: 0.05
+```
+
+因此，当前终端航向精度改善主要来自 Goal Checker 航向容差收紧，不能归因于
+`RotateToGoal.scale=50`。scale=50 对照记录见
+[`experiments/dwb_comparison_20260916_verified/scale50_five_runs.md`](experiments/dwb_comparison_20260916_verified/scale50_five_runs.md)。
+
+#### 15.10.2 Goal Checker参数优化
 
 原始参数：
 
@@ -1355,39 +1389,49 @@ yaw_goal_tolerance: 0.25
 
 对应约 14.3°。
 
-优化后：
+当前参数：
 
 ``` yaml
 yaw_goal_tolerance: 0.05
 ```
 
-对应约 2.9°，提高终端姿态约束。
+对应约 2.9°，提高终端姿态约束。`xy_goal_tolerance` 仍保持 0.25 m，
+因此本轮主要改善航向精度，并未把位置到达容差收紧到厘米级。
 
-### 15.10.3 重复性实验
+#### 15.10.3 重复性实验
 
-在固定起点和目标点条件下，进行了5次重复导航实验。
+在固定起点 `(0,0,0)` 和固定目标
+`(5.455,1.436,-1.487 rad)` 条件下，对当前参数进行了五次有效导航实验。
+五次运行的 NavigateToPose action 均返回 `SUCCEEDED`，运行时查询确认参数为
+`scale=32`、`yaw_goal_tolerance=0.05`，且未检测到 odom 跳变。
 
-评价指标包括： - 导航时间； - 初始全局规划长度； - 实际运行路径长度； -
-路径效率； - 最终位置误差； - 最终航向误差； - Gazebo Ground Truth误差。
+| 指标 | Run01 | Run02 | Run03 | Run04 | Run05 | 平均值 |
+|---|---:|---:|---:|---:|---:|---:|
+| 导航时间 (s) | 42.169 | 41.491 | 43.959 | 44.209 | 42.091 | 42.784 |
+| 初始规划长度 (m) | 5.768 | 5.768 | 5.768 | 5.768 | 5.768 | 5.768 |
+| odom 累计路径长度 (m) | 6.365 | 6.283 | 6.378 | 6.407 | 6.311 | 6.349 |
+| 路径比 | 1.103 | 1.089 | 1.106 | 1.111 | 1.094 | 1.101 |
+| 平均速度 (m/s) | 0.151 | 0.151 | 0.145 | 0.145 | 0.150 | 0.148 |
+| 定位 TF 位置误差 (cm) | 20.1 | 19.5 | 19.5 | 19.5 | 21.7 | 20.06 |
+| 定位 TF yaw 误差 (°) | 2.8 | 2.7 | 2.8 | 2.8 | 2.9 | 2.80 |
+| Gazebo 真值位置误差 (cm) | 21.5 | 20.9 | 22.2 | 22.0 | 22.8 | 21.88 |
+| Gazebo 真值 yaw 误差 (°) | 2.7 | 2.6 | 2.7 | 2.7 | 2.8 | 2.70 |
 
-平均实验结果：
+表中“路径长度”按旧基线口径由 `/odom` XY 累计得到；定位 TF 误差和 Gazebo
+world pose 真值误差分开报告。完整计算口径、CSV 和失败重试记录见
+[`experiments/dwb_yaw005_scale32_20260916/scale32_five_runs.md`](experiments/dwb_yaw005_scale32_20260916/scale32_five_runs.md)。
 
-  指标                平均结果
-  ------------------- ------------
-  导航时间            约42 s
-  初始规划长度        5.768 m
-  实际路径长度        约6.35 m
-  实际/规划路径比     约1.10
-  平均速度            约0.15 m/s
-  位置误差            约20 cm
-  yaw误差             约2.8°
-  Gazebo真值yaw误差   约2.7°
+Run02 的首次尝试在进入导航前遇到 Nav2 planner lifecycle 响应超时，原始失败
+记录已保留，表中使用隔离通信域后的有效补测。五次有效导航中均出现过 1～2 次
+`Failed to make progress`，随后由行为树恢复并成功到达。因此当前证据支持
+“固定路线最终可完成”，但还不能把过程描述为完全无恢复、无异常的稳定导航。
 
 实验结果表明：
 
-1.  优化后的 Nav2 参数能够稳定完成固定目标点导航；
+1.  当前参数下五次有效实验均能完成固定目标点导航；
 2.  终端航向误差由约14°降低至3°以内；
-3.  机器人能够满足后续电梯停靠、楼层切换等任务对终端姿态的需求。
+3.  结果为后续电梯停靠与楼层切换实验提供了终端姿态基础，但是否满足正式停靠要求，
+    仍需预先定义验收阈值并进行多目标、多路线和进出电梯场景测试。
 
 当前阶段已经完成单楼层导航控制链和终端精度优化验证。
 
@@ -1416,30 +1460,24 @@ yaw_goal_tolerance: 0.05
 当前单楼层建图、地图保存、NDT 已知地图定位、标准 TF、二维导航地图以及
 Nav2 单机器人导航链路已经完成阶段性功能验证。
 
+当前单楼层系统已经完成：LIO-SAM 三维建图、地图保存与加载、NDT 已知地图定位、
+标准 TF 维护、Nav2 单机器人导航，以及固定起终点下的终端姿态重复实验。
+
 下一阶段按以下顺序推进：
 
-当前单楼层系统已经完成： - LIO-SAM三维建图； - 地图保存与加载； -
-NDT已知地图定位； - 标准TF维护； - Nav2单机器人导航； - DWB控制优化； -
-终端姿态重复性实验。
-
-下一阶段工作： 1. 完善严格同步Ground Truth评价体系； 2.
-开展不同目标点、多路线、多障碍场景导航测试； 3.
-设计DWB/TEB/MPPI控制器对比实验； 4. 扩展多楼层独立地图管理； 5.
-建立电梯拓扑模型与楼层切换状态机； 6.
-扩展多机器人共享地图、任务分配与路径协调。 3.
-建立单机器人导航定量评价：目标到达位置/航向误差、路径长度、运行时间、最小障碍距离、轨迹平滑度与
-CPU 开销； 4. 继续完善严格同步的 Ground Truth、完整三维
-ATE/RPE、重复实验和统计； 5. 设计定位模块 baseline / prior-only /
-gate-only / full method 消融； 6.
-将单楼层稳定方案扩展为多楼层地图管理与楼层级导航状态机； 7.
-接入电梯拓扑与 FSM，实现机器人进梯、楼层切换和出梯后的地图/定位切换； 8.
-在多楼层单机器人稳定后，再扩展多机器人任务分配、路径协调与电梯调度。
+1.  制作真实且相互独立的 Floor2 三维/二维地图，验证真实楼层坐标和出梯初始位姿；
+2.  完善严格同步 Ground Truth、完整三维 ATE/RPE 和定位消融实验；
+3.  开展不同目标点、多路线、多障碍场景导航测试，补充最小障碍距离、轨迹平滑度、
+    控制振荡和 CPU 开销；
+4.  设计 DWB / TEB / MPPI 控制器对比实验；
+5.  建立电梯拓扑与 FSM，验证进梯、楼层切换和出梯后的地图/定位切换；
+6.  在多楼层单机器人稳定后，再扩展多机器人共享地图、任务分配、路径协调与电梯调度。
 
 其中论文级定量评估仍需继续补充：
 
 -   全系统统一 ROS 仿真时间与原始时间戳同步；
 -   完整六自由度 Ground Truth；
--   多次重复实验；
+-   多起点、多路线和多目标重复实验；
 -   基线 / 消融对照；
 -   预先设定的评价指标与验收阈值；
 -   Nav2 控制器与导航性能对比实验。
@@ -1622,15 +1660,102 @@ velocity_smoother
 
 当前仍需进一步开展：
 
--   DWB 参数系统化调优；
--   目标到达误差和重复性测试；
+-   不同 DWB 参数的系统化 A/B 对照；
+-   不同起点和目标点下的到达误差与重复性测试；
 -   不同目标点、障碍场景与路线的稳定性测试；
 -   DWB 与 TEB/MPPI 等方案的必要性和对比设计；
 -   导航评价指标与论文实验方案固化。
 
+### 19.6 v0.6 多楼层地图动态切换与重定位
+
+v0.6 当前状态：**✅ 多楼层地图管理、动态换图、自动重定位及一键 launch 集成已完成并验收通过。** 主要文件包括：
+
+``` text
+src/multi_floor_sim/config/floor_maps.yaml
+src/multi_floor_sim/scripts/floor_map_manager.py
+```
+
+`floor_map_manager.py` 已通过 CMake 安装为 ROS 2 executable，运行依赖也已写入
+`multi_floor_sim/package.xml`。安装结果可由以下命令确认：
+
+``` bash
+ros2 pkg executables multi_floor_sim
+# multi_floor_sim floor_map_manager.py
+```
+
+`floor_maps.yaml` 已安装到：
+
+``` text
+install/multi_floor_sim/share/multi_floor_sim/config/floor_maps.yaml
+```
+
+`floor_maps.yaml` 作为楼层地图注册表，记录每层的 Nav2 `map.yaml`、NDT
+`GlobalMap.pcd` 和默认初始位姿。`ndt_localizer` 支持运行时修改 `map_path`：先把新
+PCD 加载到临时点云，成功后替换 NDT target，并安全清除上一楼层的 last valid pose、
+odom prior 缓存和 `map -> odom` 修正，随后等待新楼层 `/initialpose`。
+
+Floor Map Manager 已实际验证以下流程：
+
+``` text
+/current_floor
+      ↓
+/map_server/load_map 切换二维地图
+      ↓
+/ndt_localizer/set_parameters 切换 GlobalMap.pcd
+      ↓
+发布对应楼层 /initialpose
+      ↓
+监听 /localization/status
+      ↓
+连续收到 2 次 NDT ACCEPT
+      ↓
+记录 FLOOR READY 并发布当前楼层信息
+```
+
+管理器采用显式状态机：
+
+``` text
+IDLE
+  → SWITCHING_NAV_MAP
+  → SWITCHING_NDT_MAP
+  → PUBLISH_INITIAL_POSE
+  → WAITING_NDT_READY
+  → READY
+```
+
+服务阶段和 NDT READY 等待阶段均有超时保护。任何步骤失败时不会把
+`current_floor_id` 更新为目标楼层，并会清理 `pending_floor_id`、`pending_cfg`、
+`waiting_for_ndt` 和 `ndt_accept_streak`；过期异步响应会被忽略。重复请求当前楼层，
+或在切换过程中请求另一楼层，也会被拒绝。
+
+Floor Map Manager 已正式接入 `floor1_nav_all.launch.py`。完成环境配置后，只需执行：
+
+``` bash
+ros2 launch multi_floor_sim floor1_nav_all.launch.py
+```
+
+即可随 Gazebo、Nav2 和 NDT 自动启动 Floor Map Manager。2026-09-17 已通过该一键启动入口
+完成 Floor1 → Floor2 → Floor1 双向切换验收：二维地图和 PCD 均成功切换，换图后自动
+发布 `/initialpose`，NDT 连续恢复 `ACCEPT`。实测结果为：
+
+-   Floor2：`map_path=/home/yez/lio_sam_maps/floor2/GlobalMap.pcd`，
+    `accepted=true`、`converged=true`、fitness 约 0.01419、`odom_prior_used=true`；
+-   Floor1：`map_path=/home/yez/lio_sam_maps/floor1/GlobalMap.pcd`，
+    `accepted=true`、`converged=true`、fitness 约 0.01414、`odom_prior_used=true`。
+
+v0.6 代码已同步到 Git 仓库分支 `v0.6-multifloor`。
+
+该验收证明了**多楼层地图动态切换与重定位链路**，不代表完整多楼层自主导航已经完成。
+当前限制为：
+
+-   Floor2 的二维地图和 PCD 仍是 Floor1 的复制占位地图，尚未制作真实独立地图；
+-   尚未实现电梯 FSM、真实进梯、乘梯和出梯控制；
+-   尚未完成真正跨楼层的连续自主导航；
+-   尚未进入多机器人任务分配、路径协调与电梯调度阶段。
+
 ## 20. 当前阶段结论
 
-截至 v0.5，本项目已经完成：
+截至 v0.6，本项目已经完成：
 
 ``` text
 Gazebo
@@ -1668,12 +1793,17 @@ DWB + velocity_smoother
 /cmd_vel
 ```
 
-整条单机器人、单楼层"建图 -\> 已知地图定位 -\> 导航控制"基础链路。
+整条单机器人、单楼层"建图 -\> 已知地图定位 -\> 导航控制"基础链路，
+以及 v0.6 的"楼层请求 -\> 二维/三维地图动态切换 -\> 自动重定位 -\> READY"管理链路。
 
 当前阶段验收结论为：
 
 > **单楼层 LIO-SAM 建图、回环、地图保存、NDT 已知地图定位、标准
 > TF、二维导航地图与 Nav2 单机器人导航控制链均已完成阶段性功能验证。**
+>
+> **✅ 多楼层地图管理、动态换图、自动重定位及一键 launch 集成已完成并验收通过。**
+>
+> 真实 Floor2、电梯 FSM 和完整跨楼层自主导航尚未完成。
 
   ---------------------------------------------------------------------------------------------------------
   验收项                  当前结论                依据或限制
@@ -1712,19 +1842,24 @@ DWB + velocity_smoother
 
   `/scan` 转换            通过                    单发布者，约 10 Hz
 
-  论文最终精度验收        尚未完成                仍需严格同步三维数据、重复实验、消融/基线对照及预设阈值
+  论文最终精度验收        尚未完成                仍需严格同步三维数据、多起点/多路线重复实验、消融/基线对照及预设阈值
 
-  Nav2 单机器人自主导航   通过阶段性功能验证      `/navigate_to_pose`、DWB、`/cmd_vel_nav`、velocity
-                                                  smoother 与 `/cmd_vel`
-                                                  控制链已接通；最终到达精度与重复性仍待定量评价
+  Nav2 单机器人自主导航   固定路线重复实验完成    `/navigate_to_pose`、DWB、`/cmd_vel_nav`、velocity
+                                                  smoother 与 `/cmd_vel` 控制链已接通；固定起终点五次有效
+                                                  实验均成功，TF yaw 误差约 2.8°，真值 yaw 误差约 2.7°；
+                                                  多目标、多路线及无恢复稳定性仍待评价
+
+  v0.6 楼层地图切换       ✅ 完成并通过验收        管理器已安装并接入一键 launch；Floor1 → Floor2 → Floor1 真实联调通过；
+                                                  连续 2 次 NDT ACCEPT 后 READY；Floor2 仍为占位复制地图
   ---------------------------------------------------------------------------------------------------------
 
 下一阶段重点：
 
-> **Nav2 参数与定量评价完善 -\> 多楼层地图管理与楼层切换 -\> 电梯 FSM
+> **多目标 Nav2 定量评价 + 真实独立 Floor2 地图 -\> 电梯 FSM 与完整跨楼层自主导航
 > -\> 多机器人任务分配、路径协调与电梯调度扩展**
 
-在进入多机器人之前，优先把当前单楼层方案做成可重复、可量化、可一键启动的稳定基线，并完成论文级定位/导航定量评估。
+在进入多机器人之前，优先完成真实 Floor2 地图、电梯 FSM 和跨楼层连续导航，
+同时继续补充论文级定位/导航定量评估。
 
 ## 21. 维护建议
 

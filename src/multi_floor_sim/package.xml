@@ -1,13 +1,50 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
+
   <name>multi_floor_sim</name>
   <version>0.0.0</version>
-  <description>TODO: Package description</description>
+
+  <description>
+    Multi-floor mobile robot simulation, localization and navigation package.
+  </description>
+
   <maintainer email="yez@todo.todo">yez</maintainer>
   <license>TODO: License declaration</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <!-- Python / ROS2 -->
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>rcl_interfaces</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+
+  <!-- Messages -->
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>diagnostic_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+
+  <!-- Launch -->
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+
+  <!-- Navigation -->
+  <exec_depend>nav2_msgs</exec_depend>
+  <exec_depend>nav2_bringup</exec_depend>
+  <exec_depend>nav2_map_server</exec_depend>
+  <exec_depend>nav2_lifecycle_manager</exec_depend>
+  <exec_depend>pointcloud_to_laserscan</exec_depend>
+
+  <!-- Localization -->
+  <exec_depend>known_map_localization</exec_depend>
+
+  <!-- Simulation -->
+  <exec_depend>ros_gz_bridge</exec_depend>
+
+  <!-- Visualization -->
+  <exec_depend>rviz2</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
@@ -15,4 +52,5 @@
   <export>
     <build_type>ament_cmake</build_type>
   </export>
+
 </package>
