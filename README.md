@@ -27,8 +27,8 @@
 
   v0.5                    ✅ 完成                 Nav2 终端姿态优化、固定起终点五次重复实验与单机器人导航初步定量评价
 
-  v0.6                    🚧 原型开发中           已加入楼层配置、Floor Map Manager 与 NDT 运行时换图原型；尚未完成安装、
-                                                  一键启动、真实 Floor2 地图及跨楼层导航验证
+  v0.6                    ✅ 完成                 多楼层地图管理核心完成；Floor1 → Floor2 → Floor1 动态换图与重定位联调通过；
+                                                  真实 Floor2、电梯 FSM 与完整跨楼层自主导航尚未完成
 
   后续                    ⏳ 规划中               多机器人共享地图、任务分配、路径协调、电梯预约与延迟传播调度
   ---------------------------------------------------------------------------------------------------------------------------
@@ -44,7 +44,10 @@
 > controller、velocity smoother 与 BT Navigator。 建图阶段二维 ATE RMSE
 > 初评约 3.98 cm；Nav2 已完成一个固定起点/固定目标的五次终端精度重复实验，
 > 当前配置下定位 TF yaw 误差约 2.8°、Gazebo 真值 yaw 误差约 2.7°。
-> 多目标、多路线、障碍场景、严格同步三维 ATE/RPE 及最终论文级验收仍需继续完善。
+> v0.6 已完成多楼层地图动态切换与重定位核心：`/current_floor` 可依次驱动 Nav2
+> 二维地图、NDT 三维地图和对应楼层 `/initialpose` 切换，并在连续 2 次
+> `NDT ACCEPT` 后进入 `FLOOR READY`。真实 Floor2、电梯 FSM、进出梯控制和完整跨楼层
+> 自主导航尚未完成。多目标、多路线、障碍场景、严格同步三维 ATE/RPE 及最终论文级验收仍需继续完善。
 
 ## 1. 项目目标
 
@@ -66,7 +69,7 @@ NDT 提供全局定位修正，由 Nav2 完成路径规划与局部控制。
 
 -   Nav2 多目标、多路线与障碍场景的系统化参数评价；
 -   严格同步 Ground Truth、完整三维 ATE/RPE 与消融/基线实验；
--   多楼层分别建图与楼层地图管理；
+-   制作并验证真实、独立的 Floor2 三维与二维地图；
 -   电梯拓扑、楼层切换与跨楼层导航状态机；
 -   多机器人共享地图；
 -   多机器人任务分配与路径协调；
@@ -1461,8 +1464,8 @@ Nav2 单机器人导航链路已经完成阶段性功能验证。
 
 下一阶段按以下顺序推进：
 
-1.  完成 v0.6 Floor Map Manager 的安装、依赖、launch 接入与失败回滚测试；
-2.  制作真实且相互独立的 Floor2 三维/二维地图，验证运行时地图切换；
+1.  将已完成的 v0.6 Floor Map Manager 补齐安装/运行依赖并接入现有一键 launch；
+2.  制作真实且相互独立的 Floor2 三维/二维地图，验证真实楼层坐标和出梯初始位姿；
 3.  完善严格同步 Ground Truth、完整三维 ATE/RPE 和定位消融实验；
 4.  开展不同目标点、多路线、多障碍场景导航测试，补充最小障碍距离、轨迹平滑度、
     控制振荡和 CPU 开销；
@@ -1663,20 +1666,21 @@ velocity_smoother
 -   DWB 与 TEB/MPPI 等方案的必要性和对比设计；
 -   导航评价指标与论文实验方案固化。
 
-### 19.6 v0.6 多楼层地图切换原型
+### 19.6 v0.6 多楼层地图动态切换与重定位
 
-当前工作区已经开始 v0.6 原型开发，新增：
+v0.6 的**多楼层地图管理核心已经完成**，新增：
 
 ``` text
 src/multi_floor_sim/config/floor_maps.yaml
 src/multi_floor_sim/scripts/floor_map_manager.py
 ```
 
-同时，`ndt_localizer` 已支持运行时修改 `map_path`：先把新 PCD 加载到临时点云，
-成功后替换 NDT target，并清除上一楼层的 last valid pose、odom prior 缓存和
-`map -> odom` 修正，等待新的 `/initialpose`。
+`floor_maps.yaml` 作为楼层地图注册表，记录每层的 Nav2 `map.yaml`、NDT
+`GlobalMap.pcd` 和默认初始位姿。`ndt_localizer` 支持运行时修改 `map_path`：先把新
+PCD 加载到临时点云，成功后替换 NDT target，并安全清除上一楼层的 last valid pose、
+odom prior 缓存和 `map -> odom` 修正，随后等待新楼层 `/initialpose`。
 
-Floor Map Manager 的目标流程为：
+Floor Map Manager 已实际验证以下流程：
 
 ``` text
 /current_floor
@@ -1685,28 +1689,50 @@ Floor Map Manager 的目标流程为：
       ↓
 /ndt_localizer/set_parameters 切换 GlobalMap.pcd
       ↓
-发布新楼层 /initialpose
+发布对应楼层 /initialpose
+      ↓
+监听 /localization/status
       ↓
 连续收到 2 次 NDT ACCEPT
       ↓
-发布 FLOOR READY 状态
+记录 FLOOR READY 并发布当前楼层信息
 ```
 
-该部分目前仍是**源码原型，尚未通过跨楼层功能验收**：
+管理器采用显式状态机：
 
--   `floor_map_manager.py` 尚未由 CMake 安装，也未加入一键 launch；
--   `multi_floor_sim/package.xml` 尚未补齐其 Python/ROS 运行依赖；
--   新增 `floor_maps.yaml` 后尚需重新编译安装 `multi_floor_sim`；
--   Floor2 的二维地图和 PCD 当前与 Floor1 文件内容相同，只能用于接口冒烟测试，
-    不能作为真实独立楼层实验；
--   尚未实现电梯拓扑、进出梯控制、楼层传感器触发和失败回滚；
--   最新 v0.6 原型代码尚未同步到 `~/multi-floor-lio-sam` GitHub 发布副本。
+``` text
+IDLE
+  → SWITCHING_NAV_MAP
+  → SWITCHING_NDT_MAP
+  → PUBLISH_INITIAL_POSE
+  → WAITING_NDT_READY
+  → READY
+```
 
-因此当前对外稳定结论仍截止 v0.5 的**单楼层**系统，不能声称已经完成多楼层导航。
+服务阶段和 NDT READY 等待阶段均有超时保护。任何步骤失败时不会把
+`current_floor_id` 更新为目标楼层，并会清理 `pending_floor_id`、`pending_cfg`、
+`waiting_for_ndt` 和 `ndt_accept_streak`；过期异步响应会被忽略。重复请求当前楼层，
+或在切换过程中请求另一楼层，也会被拒绝。
+
+2026-09-17 已在真实 Gazebo + Nav2 + NDT 系统中完成
+Floor1 → Floor2 → Floor1 双向切换验证：二维地图和 PCD 均成功切换，换图后自动发布
+`/initialpose`，NDT 连续恢复 `ACCEPT`，最终状态为 `accepted=true`、fitness 约
+0.014、`odom_prior_used=true`。v0.6 代码已同步到 Git 仓库分支
+`v0.6-multifloor`。
+
+该验收证明了**多楼层地图动态切换与重定位链路**，不代表完整多楼层自主导航已经完成。
+当前限制为：
+
+-   Floor2 的二维地图和 PCD 仍是 Floor1 的复制占位地图，尚未制作真实独立地图；
+-   `floor_map_manager.py` 尚未由 CMake 安装，也未接入现有一键 launch，相关运行依赖
+    仍需补充到 `multi_floor_sim/package.xml`；
+-   尚未实现电梯 FSM、真实进梯、乘梯和出梯控制；
+-   尚未完成真正跨楼层的连续自主导航；
+-   尚未进入多机器人任务分配、路径协调与电梯调度阶段。
 
 ## 20. 当前阶段结论
 
-截至 v0.5，本项目已经完成：
+截至 v0.6，本项目已经完成：
 
 ``` text
 Gazebo
@@ -1744,12 +1770,15 @@ DWB + velocity_smoother
 /cmd_vel
 ```
 
-整条单机器人、单楼层"建图 -\> 已知地图定位 -\> 导航控制"基础链路。
+整条单机器人、单楼层"建图 -\> 已知地图定位 -\> 导航控制"基础链路，
+以及 v0.6 的"楼层请求 -\> 二维/三维地图动态切换 -\> 自动重定位 -\> READY"管理链路。
 
 当前阶段验收结论为：
 
 > **单楼层 LIO-SAM 建图、回环、地图保存、NDT 已知地图定位、标准
-> TF、二维导航地图与 Nav2 单机器人导航控制链均已完成阶段性功能验证。**
+> TF、二维导航地图与 Nav2 单机器人导航控制链均已完成阶段性功能验证；v0.6
+> 多楼层地图动态切换与重定位核心已经完成真实系统联调。真实 Floor2、电梯 FSM
+> 和完整跨楼层自主导航尚未完成。**
 
   ---------------------------------------------------------------------------------------------------------
   验收项                  当前结论                依据或限制
@@ -1795,16 +1824,17 @@ DWB + velocity_smoother
                                                   实验均成功，TF yaw 误差约 2.8°，真值 yaw 误差约 2.7°；
                                                   多目标、多路线及无恢复稳定性仍待评价
 
-  v0.6 楼层地图切换       原型开发中              NDT 动态换图与 Floor Map Manager 已有源码；尚未安装接入，
-                                                  Floor2 地图仍为占位复制，未完成跨楼层验收
+  v0.6 楼层地图切换       多楼层地图管理核心完成  Floor1 → Floor2 → Floor1 真实联调通过；具备超时、失败状态清理、
+                                                  连续 2 次 NDT ACCEPT 后 READY；Floor2 仍为占位复制地图
   ---------------------------------------------------------------------------------------------------------
 
 下一阶段重点：
 
-> **多目标 Nav2 定量评价 + v0.6 地图切换接入 -\> 真实多楼层地图与楼层切换 -\> 电梯 FSM
-> -\> 多机器人任务分配、路径协调与电梯调度扩展**
+> **多目标 Nav2 定量评价 + Floor Map Manager 一键启动接入 -\> 真实独立 Floor2 地图
+> -\> 电梯 FSM 与完整跨楼层自主导航 -\> 多机器人任务分配、路径协调与电梯调度扩展**
 
-在进入多机器人之前，优先把当前单楼层方案做成可重复、可量化、可一键启动的稳定基线，并完成论文级定位/导航定量评估。
+在进入多机器人之前，优先完成管理器的一键启动接入、真实 Floor2 地图、电梯 FSM
+和跨楼层连续导航，同时继续补充论文级定位/导航定量评估。
 
 ## 21. 维护建议
 
