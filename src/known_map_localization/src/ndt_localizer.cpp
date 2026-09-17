@@ -14,6 +14,7 @@
 #include <vector>
 
 #include <rclcpp/rclcpp.hpp>
+#include <rcl_interfaces/msg/set_parameters_result.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/pose_with_covariance_stamped.hpp>
@@ -308,6 +309,12 @@ public:
         auto scan_qos = rclcpp::SensorDataQoS();
         scan_qos.keep_last(1);
 
+        scan_callback_group_ = create_callback_group(
+            rclcpp::CallbackGroupType::MutuallyExclusive);
+
+        rclcpp::SubscriptionOptions scan_options;
+        scan_options.callback_group = scan_callback_group_;
+
         scan_sub_ =
             this->create_subscription<
                 sensor_msgs::msg::PointCloud2>(
@@ -316,7 +323,8 @@ public:
                 std::bind(
                     &NDTLocalizer::scanCallback,
                     this,
-                    std::placeholders::_1));
+                    std::placeholders::_1),
+                scan_options);
 
         // RViz "2D Pose Estimate" publishes /initialpose
         initial_pose_sub_ =
@@ -363,6 +371,20 @@ public:
             fitness_accept_threshold_, max_position_jump_, max_yaw_jump_,
             use_odom_prior_ ? "true" : "false", odom_topic_.c_str());
 
+        // ============================================================
+        // Runtime NDT map switching
+        // ============================================================
+        parameter_callback_handle_ =
+            this->add_on_set_parameters_callback(
+                [this](const std::vector<rclcpp::Parameter> & parameters)
+                {
+                    return this->onParametersSet(parameters);
+                });
+
+        RCLCPP_INFO(
+            this->get_logger(),
+            "Runtime map switching enabled through parameter 'map_path'.");
+
         if (wait_for_initialpose_)
         {
             RCLCPP_INFO(
@@ -379,9 +401,239 @@ public:
 
 private:
 
+    bool reloadNdtMap(
+        const std::string & new_map_path,
+        std::string & reason)
+    {
+        RCLCPP_INFO(
+            this->get_logger(),
+            "Reloading NDT target map: %s",
+            new_map_path.c_str());
+
+        // 先加载到临时点云。
+        // 只有整个过程成功后才替换当前地图，
+        // 防止坏文件破坏正在工作的 NDT target。
+        PointCloudT::Ptr map_raw(new PointCloudT);
+
+        if (pcl::io::loadPCDFile<PointT>(
+                new_map_path,
+                *map_raw) == -1)
+        {
+            reason =
+                "Failed to load PCD map: " +
+                new_map_path;
+
+            RCLCPP_ERROR(
+                this->get_logger(),
+                "%s",
+                reason.c_str());
+
+            return false;
+        }
+
+        std::vector<int> indices;
+
+        pcl::removeNaNFromPointCloud(
+            *map_raw,
+            *map_raw,
+            indices);
+
+        if (map_raw->empty())
+        {
+            reason = "Loaded PCD map is empty";
+
+            RCLCPP_ERROR(
+                this->get_logger(),
+                "%s",
+                reason.c_str());
+
+            return false;
+        }
+
+        PointCloudT::Ptr new_map_cloud(
+            new PointCloudT);
+
+        pcl::VoxelGrid<PointT> map_voxel;
+
+        map_voxel.setLeafSize(
+            static_cast<float>(map_voxel_size_),
+            static_cast<float>(map_voxel_size_),
+            static_cast<float>(map_voxel_size_));
+
+        map_voxel.setInputCloud(map_raw);
+        map_voxel.filter(*new_map_cloud);
+
+        if (new_map_cloud->empty())
+        {
+            reason =
+                "Downsampled NDT map is empty";
+
+            RCLCPP_ERROR(
+                this->get_logger(),
+                "%s",
+                reason.c_str());
+
+            return false;
+        }
+
+        RCLCPP_INFO(
+            this->get_logger(),
+            "New raw map points: %zu",
+            map_raw->size());
+
+        RCLCPP_INFO(
+            this->get_logger(),
+            "New downsampled map points: %zu",
+            new_map_cloud->size());
+
+        // ------------------------------------------------------------
+        // 真正切换 NDT target
+        // ------------------------------------------------------------
+        // Wait for any currently running scanCallback to finish.
+        std::lock_guard<std::mutex> state_lock(localization_state_mutex_);
+
+        {
+            std::lock_guard<std::mutex> ndt_lock(ndt_mutex_);
+            ndt_.setInputTarget(new_map_cloud);
+        }
+
+        map_cloud_ = new_map_cloud;
+        map_path_ = new_map_path;
+
+        // ------------------------------------------------------------
+        // 清除上一楼层定位历史
+        // ------------------------------------------------------------
+        current_lidar_pose_ =
+            Eigen::Matrix4f::Identity();
+
+        last_valid_lidar_pose_ =
+            Eigen::Matrix4f::Identity();
+
+        last_valid_base_pose_ =
+            Eigen::Matrix4f::Identity();
+
+        have_last_valid_pose_ = false;
+        have_last_accept_odom_ = false;
+
+        // 清除旧 odometry prior 缓存。
+        // odomCallback 会马上重新积累当前楼层/当前时刻的数据。
+        {
+            std::lock_guard<std::mutex> lock(
+                odom_mutex_);
+
+            odom_buffer_.clear();
+        }
+
+        // 清除上一层 map -> odom 修正，
+        // 防止新楼层初始化前继续广播旧楼层全局修正。
+        {
+            std::lock_guard<std::mutex> lock(
+                map_odom_tf_mutex_);
+
+            latest_T_map_odom_ =
+                Eigen::Matrix4f::Identity();
+
+            have_map_odom_tf_ = false;
+        }
+
+        accepted_count_ = 0;
+        rejected_count_ = 0;
+
+        // 关键：
+        // 换楼层后必须重新获得该楼层初始位姿，
+        // 在此之前 scanCallback 不允许继续做 NDT。
+        initial_pose_received_ = false;
+
+        RCLCPP_INFO(
+            this->get_logger(),
+            "NDT target map switched successfully.");
+
+        RCLCPP_INFO(
+            this->get_logger(),
+            "Localization state reset. Waiting for new /initialpose.");
+
+        return true;
+    }
+
+
+    rcl_interfaces::msg::SetParametersResult
+    onParametersSet(
+        const std::vector<rclcpp::Parameter> & parameters)
+    {
+        rcl_interfaces::msg::SetParametersResult result;
+
+        result.successful = true;
+        result.reason = "success";
+
+        for (const auto & parameter : parameters)
+        {
+            if (parameter.get_name() != "map_path")
+            {
+                continue;
+            }
+
+            if (parameter.get_type() !=
+                rclcpp::ParameterType::PARAMETER_STRING)
+            {
+                result.successful = false;
+                result.reason =
+                    "map_path must be a string";
+
+                return result;
+            }
+
+            const std::string new_map_path =
+                parameter.as_string();
+
+            if (new_map_path.empty())
+            {
+                result.successful = false;
+                result.reason =
+                    "map_path cannot be empty";
+
+                return result;
+            }
+
+            if (new_map_path == map_path_)
+            {
+                RCLCPP_INFO(
+                    this->get_logger(),
+                    "Requested NDT map is already active: %s",
+                    new_map_path.c_str());
+
+                continue;
+            }
+
+            std::string reason;
+
+            // Stop new scan callbacks from starting while the new map
+            // is being prepared and committed.
+            map_switch_requested_.store(true);
+
+            const bool reload_ok =
+                reloadNdtMap(
+                    new_map_path,
+                    reason);
+
+            map_switch_requested_.store(false);
+
+            if (!reload_ok)
+            {
+                result.successful = false;
+                result.reason = reason;
+
+                return result;
+            }
+        }
+
+        return result;
+    }
+
+
     void initialPoseCallback(
         const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr msg)
     {
+        std::lock_guard<std::mutex> state_lock(localization_state_mutex_);
         if (!msg->header.frame_id.empty() &&
             msg->header.frame_id != "map")
         {
@@ -763,6 +1015,20 @@ private:
     void scanCallback(
         const sensor_msgs::msg::PointCloud2::SharedPtr msg)
     {
+        // A floor-map switch has priority over starting a new NDT match.
+        if (map_switch_requested_.load())
+        {
+            return;
+        }
+
+        std::lock_guard<std::mutex> state_lock(localization_state_mutex_);
+
+        // Re-check after acquiring the state lock.
+        if (map_switch_requested_.load())
+        {
+            return;
+        }
+
         // When requested, do not run NDT until an initial pose arrives.
         if (!initial_pose_received_)
         {
@@ -816,6 +1082,7 @@ private:
         // ============================================================
         // NDT
         // ============================================================
+        std::unique_lock<std::mutex> ndt_lock(ndt_mutex_);
         ndt_.setInputSource(scan_filtered);
 
         // Predict the pose at this scan time from the odometry increment since
@@ -880,6 +1147,9 @@ private:
         fitness_pub_->publish(fitness_msg);
 
         const Eigen::Matrix4f raw_lidar_pose = ndt_.getFinalTransformation();
+
+        // NDT内部状态读取完成，后续quality gate和TF发布不再占用NDT锁。
+        ndt_lock.unlock();
         const Eigen::Matrix4f raw_base_pose = raw_lidar_pose * T_lidar_base_;
         raw_pose_pub_->publish(matrixToPose(raw_base_pose, msg->header.stamp));
 
@@ -1027,12 +1297,22 @@ private:
             last_valid_base_pose_(2, 3), accepted_count_, rejected_count_);
     }
 
+    rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr
+        parameter_callback_handle_;
+
     std::string map_path_;
 
     double map_voxel_size_;
     double scan_voxel_size_;
 
     PointCloudT::Ptr map_cloud_;
+
+    // Protect runtime NDT target switching against scan matching.
+    std::mutex ndt_mutex_;
+
+    // Protect localization state shared by scan, initialpose and map switching.
+    std::mutex localization_state_mutex_;
+    std::atomic_bool map_switch_requested_{false};
 
     pcl::NormalDistributionsTransform<
         PointT,
@@ -1047,6 +1327,8 @@ private:
 
     rclcpp::Subscription<
         sensor_msgs::msg::PointCloud2>::SharedPtr scan_sub_;
+
+    rclcpp::CallbackGroup::SharedPtr scan_callback_group_;
 
     rclcpp::Subscription<
         geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr

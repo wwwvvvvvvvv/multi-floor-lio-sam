@@ -1,0 +1,31 @@
+floors:
+
+  floor1:
+    id: 1
+
+    nav_map:
+      yaml: "/home/yez/nav_maps/floor1/map.yaml"
+
+    ndt_map:
+      pcd: "/home/yez/lio_sam_maps/floor1/GlobalMap.pcd"
+
+    default_initial_pose:
+      x: 0.0
+      y: 0.0
+      yaw: 0.0
+
+
+  floor2:
+    id: 2
+
+    nav_map:
+      yaml: "/home/yez/nav_maps/floor2/map.yaml"
+
+    ndt_map:
+      pcd: "/home/yez/lio_sam_maps/floor2/GlobalMap.pcd"
+
+    default_initial_pose:
+      x: 0.0
+      y: 0.0
+      yaw: 0.0
+
